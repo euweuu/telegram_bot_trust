@@ -247,13 +247,16 @@ function startRealtimeListener() {
       filter: 'is_overnight=eq.true',
     }, (payload) => {
       const { new: newRow, old: oldRow } = payload;
-      // Notify only when end_mileage transitions from null → value
+      console.log(`[Realtime] trip UPDATE id=${newRow.id} | old.end_mileage=${oldRow.end_mileage} | new.end_mileage=${newRow.end_mileage}`);
+
       if ((oldRow.end_mileage == null) && (newRow.end_mileage != null)) {
+        console.log(`[Realtime] Triggering notification for trip id=${newRow.id}`);
         notifyTripCompleted(newRow);
       }
     })
-    .subscribe((status) => {
+    .subscribe((status, err) => {
       console.log('Realtime subscription status:', status);
+      if (err) console.error('Realtime subscription error:', err.message);
     });
 }
 
