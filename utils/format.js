@@ -2,20 +2,6 @@
  * Text formatting helpers for Telegram messages (HTML parse mode)
  */
 
-const PRIORITY_EMOJI = {
-  urgent: '🔴',
-  high: '🟠',
-  medium: '🔵',
-  low: '🟢',
-};
-
-const COL_LABEL = {
-  new: '🆕 Нова',
-  planned: '📋 Заплановано',
-  in_transit: '🚚 В дорозі',
-  done: '✅ Доставлено',
-};
-
 function bold(text) {
   return `<b>${escapeHtml(String(text))}</b>`;
 }
