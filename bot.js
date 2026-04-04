@@ -207,6 +207,56 @@ bot.catch((err, ctx) => {
   ctx.reply('Виникла помилка. Спробуйте /start').catch(() => {});
 });
 
+// ─── Trip completion notifications ───────────────────────────────────────────
+
+async function notifyTripCompleted(trip) {
+  try {
+    const telegramId = await db.getDriverTelegramId(trip.driver_id);
+    if (!telegramId) return; // driver not linked to Telegram
+
+    const distance = Math.max(0, (trip.end_mileage || 0) - (trip.start_mileage || 0));
+    const amount   = Math.round(distance * (trip.tariff || 0));
+    const dateStr  = trip.date
+      ? new Date(trip.date).toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit', year: 'numeric' })
+      : '—';
+
+    const msg = [
+      `✅ <b>Поїздку завершено!</b>`,
+      fmt.divider(),
+      `📅 Дата:    ${fmt.bold(dateStr)}`,
+      `📍 Маршрут: ${fmt.bold(trip.route || '—')}`,
+      `🛣 Пробіг:  ${fmt.bold(distance + ' км')}`,
+      `         (${trip.start_mileage} → ${trip.end_mileage})`,
+      `💰 Сума:   ${fmt.bold(amount.toLocaleString('uk-UA') + ' грн')}`,
+    ].join('\n');
+
+    await bot.telegram.sendMessage(telegramId, msg, { parse_mode: 'HTML' });
+    console.log(`Notification sent to telegramId=${telegramId} for trip id=${trip.id}`);
+  } catch (e) {
+    console.error('Failed to send trip completion notification:', e.message);
+  }
+}
+
+function startRealtimeListener() {
+  db.supabase
+    .channel('trips-overnight-completed')
+    .on('postgres_changes', {
+      event:  'UPDATE',
+      schema: 'public',
+      table:  'trips',
+      filter: 'is_overnight=eq.true',
+    }, (payload) => {
+      const { new: newRow, old: oldRow } = payload;
+      // Notify only when end_mileage transitions from null → value
+      if ((oldRow.end_mileage == null) && (newRow.end_mileage != null)) {
+        notifyTripCompleted(newRow);
+      }
+    })
+    .subscribe((status) => {
+      console.log('Realtime subscription status:', status);
+    });
+}
+
 // ─── Webhook server + launch ──────────────────────────────────────────────────
 
 async function start() {
@@ -237,12 +287,15 @@ async function start() {
       console.log(`Webhook registered at ${callbackUrl}`);
     });
 
+    startRealtimeListener();
+
   } else {
     // ── Polling mode (local development) ─────────────────────────────────────
     console.log('WEBHOOK_URL not set — falling back to long polling (local dev mode)');
     await bot.launch();
     const name = bot.botInfo?.username ? `@${bot.botInfo.username}` : '...';
     console.log(`Bot started (polling): ${name}`);
+    startRealtimeListener();
   }
 }
 

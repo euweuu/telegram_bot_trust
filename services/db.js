@@ -78,6 +78,20 @@ async function getLinkedDriver(telegramId) {
   return { driverId: data.driver.id, driverName: data.driver.name };
 }
 
+// ─── Notifications ────────────────────────────────────────────────────────────
+
+/**
+ * Get the Telegram ID linked to a driver (for sending notifications).
+ */
+async function getDriverTelegramId(driverId) {
+  const { data } = await supabase
+    .from('telegram_users')
+    .select('telegram_id')
+    .eq('driver_id', driverId)
+    .maybeSingle();
+  return data?.telegram_id ?? null;
+}
+
 // ─── Trips ────────────────────────────────────────────────────────────────────
 
 /**
@@ -219,6 +233,7 @@ module.exports = {
   consumeToken,
   linkTelegramUser,
   getLinkedDriver,
+  getDriverTelegramId,
   // Trips
   getDriverTrips,
   getDriverRecentTrips,
