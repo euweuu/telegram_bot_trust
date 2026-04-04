@@ -32,7 +32,6 @@ async function getSession(telegramId) {
 }
 
 function setSession(id, data) { sessions.set(String(id), data); }
-function clearSession(id)     { sessions.delete(String(id)); }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -56,7 +55,7 @@ const mainMenu = Markup.keyboard([
   ['Мої поїздки', 'Статистика'],
   ['За місяць',   'Минулий місяць'],
   ['Цей тиждень', 'Сьогодні'],
-  ['Профіль',    'Відключити Telegram'],
+  ['Профіль'],
 ]).resize();
 
 // ─── /start ───────────────────────────────────────────────────────────────────
@@ -110,7 +109,8 @@ bot.command('help', async (ctx) => {
     '<b>Статистика</b> — пробіг та сума за місяць',
     '<b>Сьогодні / Тиждень / Місяць</b> — поїздки за period',
     '<b>Профіль</b> — інформація про акаунт',
-    '<b>Відключити Telegram</b> — скасувати прив\'язку',
+    '',
+    '⚠️ Відключити Telegram можна тільки через сайт (Профіль → Telegram).',
   ].join('\n'), { parse_mode: 'HTML' });
 });
 
@@ -174,18 +174,6 @@ bot.on('text', async (ctx) => {
       break;
     }
 
-    case 'Відключити Telegram':
-    case '\u0412\u0456\u0434\u2019\u0454\u0434\u043d\u0430\u0442\u0438 Telegram': {
-      try {
-        await db.unlinkTelegramUser(userId);
-        clearSession(userId);
-        await ctx.reply(
-          'Telegram відключено.\n\nЩоб підключитися знову — перейдіть на сайт — Профіль — Telegram.',
-          Markup.removeKeyboard()
-        );
-      } catch (e) { await ctx.reply(`Помилка: ${e.message}`); }
-      break;
-    }
 
     default:
       break;
@@ -238,7 +226,7 @@ async function start() {
 
     // One HTTP server: handles both the webhook path and a /health check
     const server = http.createServer(async (req, res) => {
-      if (req.url === webhookPath && req.method === 'POST') {
+      if (req.url.startsWith(webhookPath) && req.method === 'POST') {
         await webhookHandler(req, res);
       } else {
         res.writeHead(200);
