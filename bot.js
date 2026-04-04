@@ -1,4 +1,5 @@
 require('dotenv').config();
+const http = require('http');
 const { Telegraf, Markup } = require('telegraf');
 
 const db  = require('./services/db');
@@ -212,6 +213,16 @@ async function handlePeriod(ctx, period, session) {
 bot.catch((err, ctx) => {
   console.error(`Error [${ctx.from?.id}]:`, err.message);
   ctx.reply('Виникла помилка. Спробуйте /start').catch(() => {});
+});
+
+// ─── Health-check HTTP server (required by Render web services) ──────────────
+
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end('OK');
+}).listen(PORT, () => {
+  console.log(`Health-check server listening on port ${PORT}`);
 });
 
 // ─── Launch ───────────────────────────────────────────────────────────────────
