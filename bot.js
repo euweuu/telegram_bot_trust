@@ -1,9 +1,15 @@
 require('dotenv').config();
-const http = require('http');
+const http    = require('http');
 const { Telegraf, Markup } = require('telegraf');
 
 const db  = require('./services/db');
 const fmt = require('./utils/format');
+
+// WEBHOOK_URL must be the public HTTPS URL of this service on Render,
+// e.g. https://your-service-name.onrender.com
+const WEBHOOK_URL    = process.env.WEBHOOK_URL;
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';   // optional extra security
+const PORT           = process.env.PORT || 3000;
 
 if (!process.env.BOT_TOKEN || process.env.BOT_TOKEN === 'ВСТАВЬТЕ_ВАШ_ТОКЕН_ТУТ') {
   console.error('BOT_TOKEN не вказаний у файлі .env'); process.exit(1);
@@ -215,23 +221,47 @@ bot.catch((err, ctx) => {
   ctx.reply('Виникла помилка. Спробуйте /start').catch(() => {});
 });
 
-// ─── Health-check HTTP server (required by Render web services) ──────────────
+// ─── Webhook server + launch ──────────────────────────────────────────────────
 
-const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end('OK');
-}).listen(PORT, () => {
-  console.log(`Health-check server listening on port ${PORT}`);
-});
+async function start() {
+  if (WEBHOOK_URL) {
+    // ── Webhook mode (production on Render) ───────────────────────────────────
+    const webhookPath = `/webhook/${process.env.BOT_TOKEN}`;
+    const callbackUrl = `${WEBHOOK_URL}${webhookPath}`;
 
-// ─── Launch ───────────────────────────────────────────────────────────────────
+    // Ask Telegraf to create the middleware that processes incoming updates
+    const webhookHandler = await bot.createWebhook({
+      domain:      WEBHOOK_URL,
+      path:        webhookPath,
+      secret_token: WEBHOOK_SECRET || undefined,
+    });
 
-bot.launch().then(() => {
-  const name = bot.botInfo?.username ? `@${bot.botInfo.username}` : '...';
-  console.log(`Bot started: ${name}`);
-}).catch(e => {
-  console.error('Launch error:', e.message);
+    // One HTTP server: handles both the webhook path and a /health check
+    const server = http.createServer(async (req, res) => {
+      if (req.url === webhookPath && req.method === 'POST') {
+        await webhookHandler(req, res);
+      } else {
+        res.writeHead(200);
+        res.end('OK');
+      }
+    });
+
+    server.listen(PORT, () => {
+      console.log(`Webhook server listening on port ${PORT}`);
+      console.log(`Webhook registered at ${callbackUrl}`);
+    });
+
+  } else {
+    // ── Polling mode (local development) ─────────────────────────────────────
+    console.log('WEBHOOK_URL not set — falling back to long polling (local dev mode)');
+    await bot.launch();
+    const name = bot.botInfo?.username ? `@${bot.botInfo.username}` : '...';
+    console.log(`Bot started (polling): ${name}`);
+  }
+}
+
+start().catch(e => {
+  console.error('Startup error:', e.message);
   process.exit(1);
 });
 
