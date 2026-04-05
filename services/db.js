@@ -56,7 +56,20 @@ async function linkTelegramUser(telegramId, driverId, telegramName) {
 }
 
 /**
+ * Unlink a Telegram user from their driver account.
+ */
+async function unlinkTelegramUser(telegramId) {
+  const { error } = await supabase
+    .from('telegram_users')
+    .delete()
+    .eq('telegram_id', telegramId);
+
+  if (error) throw error;
+}
+
+/**
  * Find driver linked to a Telegram ID (persistent session from DB).
+ * Returns { driverId, driverName } or null.
  */
 async function getLinkedDriver(telegramId) {
   const { data, error } = await supabase
@@ -90,6 +103,20 @@ async function getDriverTelegramId(driverId) {
     .eq('driver_id', driverId)
     .maybeSingle();
   return data?.telegram_id ?? null;
+}
+
+/**
+ * Get all linked Telegram users (for dispatcher broadcast).
+ * Returns array of { telegram_id, driver_id, telegram_name }.
+ */
+async function getAllLinkedUsers() {
+  const { data, error } = await supabase
+    .from('telegram_users')
+    .select('telegram_id, driver_id, telegram_name, driver:drivers(id, name, active)')
+    .order('linked_at', { ascending: false });
+
+  if (error) throw error;
+  return (data || []).filter(u => u.driver?.active);
 }
 
 /**
@@ -133,10 +160,10 @@ async function getDriverTrips(driverId, startDate, endDate) {
 }
 
 /**
- * Get recent trips for a driver (last N trips).
+ * Get recent trips for a driver with pagination (offset-based).
  */
-async function getDriverRecentTrips(driverId, limit = 10) {
-  const { data, error } = await supabase
+async function getDriverRecentTrips(driverId, limit = 10, offset = 0) {
+  const { data, error, count } = await supabase
     .from('trips')
     .select(`
       id,
@@ -148,13 +175,57 @@ async function getDriverRecentTrips(driverId, limit = 10) {
       notes,
       is_overnight,
       car:cars(brand, model, plate)
-    `)
+    `, { count: 'exact' })
     .eq('driver_id', driverId)
     .order('date', { ascending: false })
-    .limit(limit);
+    .range(offset, offset + limit - 1);
 
   if (error) throw error;
-  return (data || []).map(formatTrip);
+  return {
+    trips: (data || []).map(formatTrip),
+    total: count || 0,
+    hasMore: (offset + limit) < (count || 0),
+  };
+}
+
+/**
+ * Get summary stats for all active drivers (for dispatcher).
+ */
+async function getAllDriversStats(startDate, endDate) {
+  const { data, error } = await supabase
+    .from('trips')
+    .select(`
+      driver_id,
+      start_mileage,
+      end_mileage,
+      tariff,
+      is_overnight,
+      driver:drivers(id, name, active)
+    `)
+    .gte('date', startDate)
+    .lte('date', endDate);
+
+  if (error) throw error;
+
+  // Group by driver
+  const byDriver = {};
+  for (const trip of (data || [])) {
+    if (!trip.driver?.active) continue;
+    const id = trip.driver_id;
+    if (!byDriver[id]) {
+      byDriver[id] = {
+        driverId: id,
+        driverName: trip.driver.name,
+        trips: [],
+      };
+    }
+    byDriver[id].trips.push(trip);
+  }
+
+  return Object.values(byDriver).map(d => ({
+    ...d,
+    stats: calcStats(d.trips.map(t => formatTrip(t))),
+  }));
 }
 
 // ─── Analytics ────────────────────────────────────────────────────────────────
@@ -169,12 +240,12 @@ function calcStats(trips) {
   const overnight   = trips.filter(t => t.isOvernight && t.endMileage == null).length;
 
   return {
-    totalTrips:      trips.length,
-    completedTrips:  completed.length,
+    totalTrips:       trips.length,
+    completedTrips:   completed.length,
     overnightPending: overnight,
-    totalKm:         Math.round(totalKm),
-    totalAmount:     Math.round(totalAmount),
-    avgKm:           completed.length > 0 ? Math.round(totalKm / completed.length) : 0,
+    totalKm:          Math.round(totalKm),
+    totalAmount:      Math.round(totalAmount),
+    avgKm:            completed.length > 0 ? Math.round(totalKm / completed.length) : 0,
   };
 }
 
@@ -188,8 +259,8 @@ function formatTrip(trip) {
   const amount = distance != null ? distance * (trip.tariff || 0) : null;
 
   return {
-    id:           trip.id,
-    date:         trip.date,
+    id:            trip.id,
+    date:          trip.date,
     dateFormatted: trip.date
       ? new Date(trip.date).toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit', year: 'numeric' })
       : '—',
@@ -244,8 +315,10 @@ module.exports = {
   validateLinkToken,
   consumeToken,
   linkTelegramUser,
+  unlinkTelegramUser,
   getLinkedDriver,
   getDriverTelegramId,
+  getAllLinkedUsers,
   // Cars
   getCarById,
   // Trips
@@ -253,6 +326,7 @@ module.exports = {
   getDriverRecentTrips,
   // Analytics
   calcStats,
+  getAllDriversStats,
   // Date utils
   getDateRange,
   toISODate,

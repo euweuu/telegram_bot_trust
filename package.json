@@ -1,6 +1,6 @@
 {
   "name": "mileage-tracker-telegram-bot",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Telegram bot for Mileage Tracker - reports and statistics for drivers and dispatchers",
   "main": "bot.js",
   "scripts": {
@@ -8,9 +8,10 @@
     "dev": "nodemon bot.js"
   },
   "dependencies": {
-    "telegraf": "^4.16.3",
     "@supabase/supabase-js": "^2.49.1",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "node-cron": "^3.0.3",
+    "telegraf": "^4.16.3"
   },
   "devDependencies": {
     "nodemon": "^3.1.9"
