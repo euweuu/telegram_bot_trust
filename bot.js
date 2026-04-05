@@ -1,15 +1,15 @@
 require('dotenv').config();
-const http    = require('http');
+const http = require('http');
 const { Telegraf, Markup } = require('telegraf');
 
-const db  = require('./services/db');
+const db = require('./services/db');
 const fmt = require('./utils/format');
 
 // WEBHOOK_URL must be the public HTTPS URL of this service on Render,
 // e.g. https://your-service-name.onrender.com
-const WEBHOOK_URL    = process.env.WEBHOOK_URL;
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';   // optional extra security
-const PORT           = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
 if (!process.env.BOT_TOKEN || process.env.BOT_TOKEN === 'ВСТАВЬТЕ_ВАШ_ТОКЕН_ТУТ') {
   console.error('BOT_TOKEN не вказаний у файлі .env'); process.exit(1);
@@ -42,9 +42,9 @@ function buildName(from) {
 
 function periodLabel(p) {
   return {
-    today:      'сьогодні',
-    week:       'цей тиждень',
-    month:      'цей місяць',
+    today: 'сьогодні',
+    week: 'цей тиждень',
+    month: 'цей місяць',
     last_month: 'минулий місяць',
   }[p] || p;
 }
@@ -53,7 +53,7 @@ function periodLabel(p) {
 
 const mainMenu = Markup.keyboard([
   ['Мої поїздки', 'Статистика'],
-  ['За місяць',   'Минулий місяць'],
+  ['За місяць', 'Минулий місяць'],
   ['Цей тиждень', 'Сьогодні'],
   ['Профіль'],
 ]).resize();
@@ -61,7 +61,7 @@ const mainMenu = Markup.keyboard([
 // ─── /start ───────────────────────────────────────────────────────────────────
 
 bot.start(async (ctx) => {
-  const userId     = ctx.from.id;
+  const userId = ctx.from.id;
   const startParam = ctx.startPayload;
 
   if (startParam && startParam.length >= 6) {
@@ -117,8 +117,8 @@ bot.command('help', async (ctx) => {
 // ─── Text handler ─────────────────────────────────────────────────────────────
 
 bot.on('text', async (ctx) => {
-  const userId  = ctx.from.id;
-  const text    = ctx.message.text.trim();
+  const userId = ctx.from.id;
+  const text = ctx.message.text.trim();
   const session = await getSession(userId);
 
   if (!session) {
@@ -135,7 +135,7 @@ bot.on('text', async (ctx) => {
       await ctx.reply('Завантаження...');
       try {
         const trips = await db.getDriverRecentTrips(session.driverId, 10);
-        const msg   = fmt.formatTripList(
+        const msg = fmt.formatTripList(
           trips,
           `<b>Останні 10 поїздок</b> — ${fmt.escapeHtml(session.driverName)}`
         );
@@ -158,9 +158,9 @@ bot.on('text', async (ctx) => {
       break;
     }
 
-    case 'Сьогодні':       await handlePeriod(ctx, 'today',      session); break;
-    case 'Цей тиждень':    await handlePeriod(ctx, 'week',       session); break;
-    case 'За місяць':      await handlePeriod(ctx, 'month',      session); break;
+    case 'Сьогодні': await handlePeriod(ctx, 'today', session); break;
+    case 'Цей тиждень': await handlePeriod(ctx, 'week', session); break;
+    case 'За місяць': await handlePeriod(ctx, 'month', session); break;
     case 'Минулий місяць': await handlePeriod(ctx, 'last_month', session); break;
 
     case 'Профіль': {
@@ -204,23 +204,79 @@ async function handlePeriod(ctx, period, session) {
 
 bot.catch((err, ctx) => {
   console.error(`Error [${ctx.from?.id}]:`, err.message);
-  ctx.reply('Виникла помилка. Спробуйте /start').catch(() => {});
+  ctx.reply('Виникла помилка. Спробуйте /start').catch(() => { });
 });
 
-// ─── Trip completion notifications ───────────────────────────────────────────
+// ─── Notification helpers ─────────────────────────────────────────────────────
 
-async function notifyTripCompleted(trip) {
+function formatDateUk(dateStr) {
+  if (!dateStr) return '—';
+  return new Date(dateStr).toLocaleDateString('uk-UA', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+  });
+}
+
+async function sendNotification(driverId, tripId, buildMsg) {
   try {
-    const telegramId = await db.getDriverTelegramId(trip.driver_id);
-    if (!telegramId) return; // driver not linked to Telegram
+    const telegramId = await db.getDriverTelegramId(driverId);
+    if (!telegramId) {
+      console.log(`[Notify] driver_id=${driverId} not linked to Telegram, skipping`);
+      return;
+    }
+    const msg = buildMsg();
+    await bot.telegram.sendMessage(telegramId, msg, { parse_mode: 'HTML' });
+    console.log(`[Notify] sent to telegramId=${telegramId} for trip id=${tripId}`);
+  } catch (e) {
+    console.error(`[Notify] failed for trip id=${tripId}:`, e.message);
+  }
+}
 
-    const distance = Math.max(0, (trip.end_mileage || 0) - (trip.start_mileage || 0));
-    const amount   = Math.round(distance * (trip.tariff || 0));
-    const dateStr  = trip.date
-      ? new Date(trip.date).toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit', year: 'numeric' })
+// ─── Trip created notification ────────────────────────────────────────────────
+
+async function notifyTripCreated(trip) {
+  if (!trip.driver_id) return;
+
+  await sendNotification(trip.driver_id, trip.id, () => {
+    const dateStr = formatDateUk(trip.date);
+    const carStr = trip.car
+      ? `${trip.car.brand} ${trip.car.model} (${trip.car.plate})`
+      : '—';
+    const tariffStr = trip.tariff
+      ? `${Number(trip.tariff).toLocaleString('uk-UA')} грн/км`
       : '—';
 
-    const msg = [
+    const lines = [
+      `🆕 <b>Вам призначено поїздку!</b>`,
+      fmt.divider(),
+      `📅 Дата:    ${fmt.bold(dateStr)}`,
+      `📍 Маршрут: ${fmt.bold(trip.route || '—')}`,
+      `🚗 Авто:    ${fmt.bold(carStr)}`,
+      `💵 Тариф:   ${fmt.bold(tariffStr)}`,
+    ];
+
+    if (trip.notes) {
+      lines.push(`📝 Примітка: ${fmt.escapeHtml(trip.notes)}`);
+    }
+
+    if (trip.is_overnight) {
+      lines.push(`🌙 Нічна поїздка — пробіг буде внесено після завершення`);
+    }
+
+    return lines.join('\n');
+  });
+}
+
+// ─── Trip completed notification ─────────────────────────────────────────────
+
+async function notifyTripCompleted(trip) {
+  if (!trip.driver_id) return;
+
+  await sendNotification(trip.driver_id, trip.id, () => {
+    const dateStr = formatDateUk(trip.date);
+    const distance = Math.max(0, (trip.end_mileage || 0) - (trip.start_mileage || 0));
+    const amount = Math.round(distance * (trip.tariff || 0));
+
+    return [
       `✅ <b>Поїздку завершено!</b>`,
       fmt.divider(),
       `📅 Дата:    ${fmt.bold(dateStr)}`,
@@ -229,37 +285,77 @@ async function notifyTripCompleted(trip) {
       `         (${trip.start_mileage} → ${trip.end_mileage})`,
       `💰 Сума:   ${fmt.bold(amount.toLocaleString('uk-UA') + ' грн')}`,
     ].join('\n');
-
-    await bot.telegram.sendMessage(telegramId, msg, { parse_mode: 'HTML' });
-    console.log(`Notification sent to telegramId=${telegramId} for trip id=${trip.id}`);
-  } catch (e) {
-    console.error('Failed to send trip completion notification:', e.message);
-  }
+  });
 }
 
-function startRealtimeListener() {
-  db.supabase
-    .channel('trips-overnight-completed')
+// ─── Realtime listener з авто-реконнектом ────────────────────────────────────
+
+let realtimeChannels = [];
+
+function setupChannels() {
+  realtimeChannels.forEach(ch => {
+    try { db.supabase.removeChannel(ch); } catch {}
+  });
+  realtimeChannels = [];
+
+  const chCreated = db.supabase
+    .channel('trips-created')
     .on('postgres_changes', {
-      event:  'UPDATE',
+      event: 'INSERT',
       schema: 'public',
-      table:  'trips',
-      filter: 'is_overnight=eq.true',
+      table: 'trips',
+    }, async (payload) => {
+      const trip = payload.new;
+      console.log(`[Realtime] trip INSERT id=${trip.id} driver_id=${trip.driver_id}`);
+      if (!trip.driver_id) return;
+      const car = trip.car_id ? await db.getCarById(trip.car_id) : null;
+      notifyTripCreated({ ...trip, car });
+    })
+    .subscribe((status, err) => {
+      console.log('[Realtime] trips-created:', status);
+      if (err) console.error('[Realtime] trips-created error:', err.message);
+    });
+
+  const chCompleted = db.supabase
+    .channel('trips-completed')
+    .on('postgres_changes', {
+      event: 'UPDATE',
+      schema: 'public',
+      table: 'trips',
     }, (payload) => {
       const { new: newRow, old: oldRow } = payload;
       console.log(`[Realtime] trip UPDATE id=${newRow.id} | old.end_mileage=${oldRow.end_mileage} | new.end_mileage=${newRow.end_mileage}`);
-
       if ((oldRow.end_mileage == null) && (newRow.end_mileage != null)) {
-        console.log(`[Realtime] Triggering notification for trip id=${newRow.id}`);
         notifyTripCompleted(newRow);
       }
     })
     .subscribe((status, err) => {
-      console.log('Realtime subscription status:', status);
-      if (err) console.error('Realtime subscription error:', err.message);
+      console.log('[Realtime] trips-completed:', status);
+      if (err) console.error('[Realtime] trips-completed error:', err.message);
     });
+
+  realtimeChannels = [chCreated, chCompleted];
 }
 
+function startRealtimeListener() {
+  setupChannels();
+
+  if (WEBHOOK_URL) {
+    setInterval(async () => {
+      try {
+        const res = await fetch(`${WEBHOOK_URL}/health`);
+        console.log(`[Keepalive] ping ${res.status}`);
+      } catch (e) {
+        console.warn('[Keepalive] ping failed:', e.message);
+      }
+    }, 10 * 60 * 1000);
+  }
+
+  setInterval(() => {
+    console.log('[Realtime] Scheduled reconnect...');
+    setupChannels();
+  }, 30 * 60 * 1000);
+}
 // ─── Webhook server + launch ──────────────────────────────────────────────────
 
 async function start() {
@@ -270,8 +366,8 @@ async function start() {
 
     // Ask Telegraf to create the middleware that processes incoming updates
     const webhookHandler = await bot.createWebhook({
-      domain:      WEBHOOK_URL,
-      path:        webhookPath,
+      domain: WEBHOOK_URL,
+      path: webhookPath,
       secret_token: WEBHOOK_SECRET || undefined,
     });
 
@@ -307,5 +403,5 @@ start().catch(e => {
   process.exit(1);
 });
 
-process.once('SIGINT',  () => { try { bot.stop('SIGINT');  } catch { process.exit(0); } });
+process.once('SIGINT', () => { try { bot.stop('SIGINT'); } catch { process.exit(0); } });
 process.once('SIGTERM', () => { try { bot.stop('SIGTERM'); } catch { process.exit(0); } });

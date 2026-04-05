@@ -92,6 +92,18 @@ async function getDriverTelegramId(driverId) {
   return data?.telegram_id ?? null;
 }
 
+/**
+ * Get basic car info by ID (for notifications).
+ */
+async function getCarById(carId) {
+  const { data } = await supabase
+    .from('cars')
+    .select('brand, model, plate')
+    .eq('id', carId)
+    .maybeSingle();
+  return data ?? null;
+}
+
 // ─── Trips ────────────────────────────────────────────────────────────────────
 
 /**
@@ -234,6 +246,8 @@ module.exports = {
   linkTelegramUser,
   getLinkedDriver,
   getDriverTelegramId,
+  // Cars
+  getCarById,
   // Trips
   getDriverTrips,
   getDriverRecentTrips,
