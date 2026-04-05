@@ -2,19 +2,21 @@
  * Text formatting helpers for Telegram messages (HTML parse mode)
  */
 
+function escapeHtml(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 function bold(text) {
   return `<b>${escapeHtml(String(text))}</b>`;
 }
 
 function mono(text) {
   return `<code>${escapeHtml(String(text))}</code>`;
-}
-
-function escapeHtml(text) {
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
 }
 
 function line(label, value) {
@@ -25,21 +27,17 @@ function divider(char = '─') {
   return char.repeat(28);
 }
 
-// ─── Trip formatting ──────────────────────────────────────────────────────────
+// ─── Trip formatting (без суми) ───────────────────────────────────────────────
 
 function formatTripItem(trip, index) {
   const distStr = trip.distance != null
     ? `${trip.distance} км`
     : '⏳ нічна (не завершена)';
 
-  const amountStr = trip.amount != null
-    ? `${trip.amount.toLocaleString('uk-UA')} грн`
-    : '—';
-
   const lines = [
-    `${bold(index + 1 + '.')} ${escapeHtml(trip.dateFormatted)} — ${escapeHtml(trip.car)}`,
+    `${bold(String(index + 1))}. ${escapeHtml(trip.dateFormatted)} — ${escapeHtml(trip.car)}`,
     `   📍 ${escapeHtml(trip.route)}`,
-    `   🛣 ${distStr}   💰 ${amountStr}`,
+    `   🛣 ${distStr}`,
   ];
 
   if (trip.notes) {
@@ -50,7 +48,7 @@ function formatTripItem(trip, index) {
 }
 
 function formatTripList(trips, title) {
-  if (!trips.length) {
+  if (!trips || !trips.length) {
     return `${title}\n\nПоїздок не знайдено.`;
   }
 
@@ -58,20 +56,37 @@ function formatTripList(trips, title) {
   return `${title}\n\n${items}`;
 }
 
-// ─── Stats formatting ─────────────────────────────────────────────────────────
+// ─── Stats formatting (без суми) ──────────────────────────────────────────────
 
 function formatStats(stats, label) {
-  return [
+  if (!stats || stats.totalTrips === 0) {
+    return `${label}\n\nНемає поїздок за обраний період.`;
+  }
+
+  const lines = [
     `📊 ${bold(label)}`,
     divider(),
-    `🚕 Поїздок: ${bold(stats.totalTrips)}${stats.overnightPending ? ` (${stats.overnightPending} нічних)` : ''}`,
+    `🚕 Поїздок: ${bold(String(stats.totalTrips))}${stats.overnightPending ? ` (${stats.overnightPending} нічних)` : ''}`,
     `🛣 Пробіг: ${bold(stats.totalKm + ' км')}`,
     `📏 Середня: ${bold(stats.avgKm + ' км')}`,
-    `💰 Сума: ${bold(stats.totalAmount.toLocaleString('uk-UA') + ' грн')}`,
-  ].join('\n');
+  ];
+
+  return lines.join('\n');
+}
+
+// Додаткова функція для сумісності з іменами викликів у боті
+function formatStatsWithoutAmount(stats, label) {
+  return formatStats(stats, label);
 }
 
 module.exports = {
-  bold, mono, escapeHtml, line, divider,
-  formatTripItem, formatTripList, formatStats,
+  escapeHtml,
+  bold,
+  mono,
+  line,
+  divider,
+  formatTripItem,
+  formatTripList,
+  formatStats,
+  formatStatsWithoutAmount, // Аліас для сумісності
 };

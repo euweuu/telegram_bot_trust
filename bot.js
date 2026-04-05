@@ -41,7 +41,7 @@ const rateLimit = new Map();
 async function checkRateLimit(userId) {
   const now = Date.now();
   const userLimit = rateLimit.get(userId) || [];
-  const recent = userLimit.filter(t => now - t < 1000); // 1 секунда
+  const recent = userLimit.filter(t => now - t < 1000);
 
   if (recent.length >= 2) {
     throw new Error('Занадто багато запитів. Зачекайте трохи.');
@@ -50,7 +50,6 @@ async function checkRateLimit(userId) {
   recent.push(now);
   rateLimit.set(userId, recent);
 
-  // Очищаємо старі запити кожні 5 хвилин
   setTimeout(() => {
     const current = rateLimit.get(userId);
     if (current) {
@@ -133,7 +132,7 @@ bot.command('help', async (ctx) => {
   await ctx.reply([
     '<b>Доступні дії:</b>', '',
     '<b>Мої поїздки</b> — останні 10 поїздок',
-    '<b>Статистика</b> — пробіг та сума за місяць',
+    '<b>Статистика</b> — пробіг за місяць',
     '<b>Сьогодні / Тиждень / Місяць</b> — поїздки за обраний період',
     '<b>Профіль</b> — інформація про акаунт',
     '',
@@ -146,7 +145,6 @@ bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const text = ctx.message.text.trim();
 
-  // Rate limiting
   try {
     await checkRateLimit(userId);
   } catch (e) {
@@ -187,7 +185,7 @@ bot.on('text', async (ctx) => {
         const trips = await db.getDriverTrips(session.driverId, start, end);
         const stats = db.calcStats(trips);
         await ctx.reply(
-          fmt.formatStats(stats, `Статистика — ${session.driverName} (цей місяць)`),
+          fmt.formatStatsWithoutAmount(stats, `Статистика — ${session.driverName} (цей місяць)`),
           { parse_mode: 'HTML' }
         );
       } catch (e) {
@@ -233,7 +231,7 @@ async function handlePeriod(ctx, period, session) {
     const trips = await db.getDriverTrips(session.driverId, start, end);
     const stats = db.calcStats(trips);
     await ctx.reply(
-      fmt.formatStats(stats, `${session.driverName} — ${label}`),
+      fmt.formatStatsWithoutAmount(stats, `${session.driverName} — ${label}`),
       { parse_mode: 'HTML' }
     );
     if (trips.length > 0) {
@@ -276,7 +274,7 @@ async function sendNotification(driverId, tripId, buildMsg) {
   }
 }
 
-// ─── Trip created notification ────────────────────────────────────────────────
+// ─── Trip created notification (без суми) ─────────────────────────────────────
 async function notifyTripCreated(trip) {
   if (!trip.driver_id) return;
 
@@ -285,9 +283,6 @@ async function notifyTripCreated(trip) {
     const carStr = trip.car
       ? `${trip.car.brand} ${trip.car.model} (${trip.car.plate})`
       : '—';
-    const tariffStr = trip.tariff
-      ? `${Number(trip.tariff).toLocaleString('uk-UA')} грн/км`
-      : '—';
 
     const lines = [
       `🆕 <b>Вам призначено поїздку!</b>`,
@@ -295,7 +290,6 @@ async function notifyTripCreated(trip) {
       `📅 Дата:    ${fmt.bold(dateStr)}`,
       `📍 Маршрут: ${fmt.bold(trip.route || '—')}`,
       `🚗 Авто:    ${fmt.bold(carStr)}`,
-      `💵 Тариф:   ${fmt.bold(tariffStr)}`,
     ];
 
     if (trip.notes) {
@@ -310,14 +304,13 @@ async function notifyTripCreated(trip) {
   });
 }
 
-// ─── Trip completed notification ─────────────────────────────────────────────
+// ─── Trip completed notification (без суми) ───────────────────────────────────
 async function notifyTripCompleted(trip) {
   if (!trip.driver_id) return;
 
   await sendNotification(trip.driver_id, trip.id, () => {
     const dateStr = formatDateUk(trip.date);
     const distance = Math.max(0, (trip.end_mileage || 0) - (trip.start_mileage || 0));
-    const amount = Math.round(distance * (trip.tariff || 0));
 
     return [
       `✅ <b>Поїздку завершено!</b>`,
@@ -326,16 +319,15 @@ async function notifyTripCompleted(trip) {
       `📍 Маршрут: ${fmt.bold(trip.route || '—')}`,
       `🛣 Пробіг:  ${fmt.bold(distance + ' км')}`,
       `         (${trip.start_mileage} → ${trip.end_mileage})`,
-      `💰 Сума:   ${fmt.bold(amount.toLocaleString('uk-UA') + ' грн')}`,
     ].join('\n');
   });
 }
 
-// ─── Realtime listener з авто-реконнектом (ВИПРАВЛЕНО) ────────────────────────
+// ─── Realtime listener з авто-реконнектом ─────────────────────────────────────
 let realtimeChannels = [];
-let reconnectInterval = null;
 let healthCheckInterval = null;
-let server = null; // Для graceful shutdown
+let keepaliveInterval = null;
+let server = null;
 
 function cleanupChannels() {
   if (realtimeChannels.length) {
@@ -352,7 +344,6 @@ function cleanupChannels() {
 }
 
 function setupChannels() {
-  // Закриваємо старі канали перед створенням нових
   cleanupChannels();
 
   const chCreated = db.supabase
@@ -403,7 +394,6 @@ function setupChannels() {
 function startRealtimeListener() {
   setupChannels();
 
-  // Перевірка здоров'я каналів замість повного перепідключення
   if (healthCheckInterval) clearInterval(healthCheckInterval);
   healthCheckInterval = setInterval(() => {
     let needsReconnect = false;
@@ -420,10 +410,9 @@ function startRealtimeListener() {
     }
   }, 30 * 60 * 1000);
 
-  // Keepalive для Render (тільки якщо є WEBHOOK_URL)
   if (WEBHOOK_URL) {
-    if (reconnectInterval) clearInterval(reconnectInterval);
-    reconnectInterval = setInterval(async () => {
+    if (keepaliveInterval) clearInterval(keepaliveInterval);
+    keepaliveInterval = setInterval(async () => {
       try {
         const res = await fetch(`${WEBHOOK_URL}/health`);
         console.log(`[Keepalive] ping ${res.status}`);
@@ -434,25 +423,21 @@ function startRealtimeListener() {
   }
 }
 
-// ─── Graceful shutdown (ДОДАНО) ───────────────────────────────────────────────
+// ─── Graceful shutdown ────────────────────────────────────────────────────────
 async function shutdown(signal) {
   console.log(`\n${signal} received. Shutting down gracefully...`);
 
-  // Зупиняємо інтервали
   if (healthCheckInterval) clearInterval(healthCheckInterval);
-  if (reconnectInterval) clearInterval(reconnectInterval);
+  if (keepaliveInterval) clearInterval(keepaliveInterval);
 
-  // Закриваємо realtime канали
   cleanupChannels();
 
-  // Закриваємо HTTP сервер (якщо в webhook режимі)
   if (server) {
     server.close(() => {
       console.log('HTTP server closed');
     });
   }
 
-  // Зупиняємо бота
   try {
     await bot.stop(signal);
   } catch (e) {
@@ -465,23 +450,19 @@ async function shutdown(signal) {
 // ─── Webhook server + launch ──────────────────────────────────────────────────
 async function start() {
   if (WEBHOOK_URL) {
-    // ── Webhook mode (production on Render) ───────────────────────────────────
     const webhookPath = `/webhook/${process.env.BOT_TOKEN}`;
     const callbackUrl = `${WEBHOOK_URL}${webhookPath}`;
 
-    // Ask Telegraf to create the middleware that processes incoming updates
     const webhookHandler = await bot.createWebhook({
       domain: WEBHOOK_URL,
       path: webhookPath,
       secret_token: WEBHOOK_SECRET || undefined,
     });
 
-    // One HTTP server: handles both the webhook path and a /health check
     server = http.createServer(async (req, res) => {
       if (req.url.startsWith(webhookPath) && req.method === 'POST') {
         await webhookHandler(req, res);
       } else if (req.url === '/health') {
-        // Покращений health check
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           status: 'ok',
@@ -507,7 +488,6 @@ async function start() {
     startRealtimeListener();
 
   } else {
-    // ── Polling mode (local development) ─────────────────────────────────────
     console.log('WEBHOOK_URL not set — falling back to long polling (local dev mode)');
     await bot.launch();
     const name = bot.botInfo?.username ? `@${bot.botInfo.username}` : '...';
@@ -516,11 +496,9 @@ async function start() {
   }
 }
 
-// Реєструємо обробники graceful shutdown
 process.once('SIGINT', () => shutdown('SIGINT'));
 process.once('SIGTERM', () => shutdown('SIGTERM'));
 
-// Додатковий обробник для unhandled rejections
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
