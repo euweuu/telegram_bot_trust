@@ -12,13 +12,13 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';   // optional extra sec
 const PORT = process.env.PORT || 3000;
 
 if (!process.env.BOT_TOKEN || process.env.BOT_TOKEN === 'ВСТАВЬТЕ_ВАШ_ТОКЕН_ТУТ') {
-  console.error('BOT_TOKEN не вказаний у файлі .env'); process.exit(1);
+  console.error('BOT_TOKEN не вказаний у файлі .env');
+  process.exit(1);
 }
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // ─── Session cache ────────────────────────────────────────────────────────────
-
 const sessions = new Map();
 
 async function getSession(telegramId) {
@@ -31,10 +31,40 @@ async function getSession(telegramId) {
   return session;
 }
 
-function setSession(id, data) { sessions.set(String(id), data); }
+function setSession(id, data) {
+  sessions.set(String(id), data);
+}
+
+// ─── Rate limiting ────────────────────────────────────────────────────────────
+const rateLimit = new Map();
+
+async function checkRateLimit(userId) {
+  const now = Date.now();
+  const userLimit = rateLimit.get(userId) || [];
+  const recent = userLimit.filter(t => now - t < 1000); // 1 секунда
+
+  if (recent.length >= 2) {
+    throw new Error('Занадто багато запитів. Зачекайте трохи.');
+  }
+
+  recent.push(now);
+  rateLimit.set(userId, recent);
+
+  // Очищаємо старі запити кожні 5 хвилин
+  setTimeout(() => {
+    const current = rateLimit.get(userId);
+    if (current) {
+      const filtered = current.filter(t => now - t < 1000);
+      if (filtered.length === 0) {
+        rateLimit.delete(userId);
+      } else {
+        rateLimit.set(userId, filtered);
+      }
+    }
+  }, 5000);
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
 function buildName(from) {
   if (from.username) return `@${from.username}`;
   return [from.first_name, from.last_name].filter(Boolean).join(' ') || String(from.id);
@@ -50,7 +80,6 @@ function periodLabel(p) {
 }
 
 // ─── Keyboard ─────────────────────────────────────────────────────────────────
-
 const mainMenu = Markup.keyboard([
   ['Мої поїздки', 'Статистика'],
   ['За місяць', 'Минулий місяць'],
@@ -59,7 +88,6 @@ const mainMenu = Markup.keyboard([
 ]).resize();
 
 // ─── /start ───────────────────────────────────────────────────────────────────
-
 bot.start(async (ctx) => {
   const userId = ctx.from.id;
   const startParam = ctx.startPayload;
@@ -101,7 +129,6 @@ bot.start(async (ctx) => {
 });
 
 // ─── /help ────────────────────────────────────────────────────────────────────
-
 bot.command('help', async (ctx) => {
   await ctx.reply([
     '<b>Доступні дії:</b>', '',
@@ -110,27 +137,34 @@ bot.command('help', async (ctx) => {
     '<b>Сьогодні / Тиждень / Місяць</b> — поїздки за обраний період',
     '<b>Профіль</b> — інформація про акаунт',
     '',
-    '⚠️ Відключити Telegram можна тільки через сайт (Профіль → Telegram).',
+    '⚠️ Відключити Telegram можна тільки через сайт euweuu.github.io/mileage-tracker/ (Профіль → Telegram).',
   ].join('\n'), { parse_mode: 'HTML' });
 });
 
 // ─── Text handler ─────────────────────────────────────────────────────────────
-
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const text = ctx.message.text.trim();
+
+  // Rate limiting
+  try {
+    await checkRateLimit(userId);
+  } catch (e) {
+    await ctx.reply(e.message);
+    return;
+  }
+
   const session = await getSession(userId);
 
   if (!session) {
     await ctx.reply(
-      'Ваш Telegram ще не прив\'язаний.\n\nПерейдіть на сайт — <b>Профіль — Telegram</b>.',
+      'Ваш Telegram ще не прив\'язаний.\n\nПерейдіть на сайт euweuu.github.io/mileage-tracker/ — <b>Профіль — Telegram</b>.',
       { parse_mode: 'HTML', ...Markup.removeKeyboard() }
     );
     return;
   }
 
   switch (text) {
-
     case 'Мої поїздки': {
       await ctx.reply('Завантаження...');
       try {
@@ -140,7 +174,9 @@ bot.on('text', async (ctx) => {
           `<b>Останні 10 поїздок</b> — ${fmt.escapeHtml(session.driverName)}`
         );
         await ctx.reply(msg, { parse_mode: 'HTML' });
-      } catch (e) { await ctx.reply(`Помилка: ${e.message}`); }
+      } catch (e) {
+        await ctx.reply(`Помилка: ${e.message}`);
+      }
       break;
     }
 
@@ -154,14 +190,24 @@ bot.on('text', async (ctx) => {
           fmt.formatStats(stats, `Статистика — ${session.driverName} (цей місяць)`),
           { parse_mode: 'HTML' }
         );
-      } catch (e) { await ctx.reply(`Помилка: ${e.message}`); }
+      } catch (e) {
+        await ctx.reply(`Помилка: ${e.message}`);
+      }
       break;
     }
 
-    case 'Сьогодні': await handlePeriod(ctx, 'today', session); break;
-    case 'Цей тиждень': await handlePeriod(ctx, 'week', session); break;
-    case 'За місяць': await handlePeriod(ctx, 'month', session); break;
-    case 'Минулий місяць': await handlePeriod(ctx, 'last_month', session); break;
+    case 'Сьогодні':
+      await handlePeriod(ctx, 'today', session);
+      break;
+    case 'Цей тиждень':
+      await handlePeriod(ctx, 'week', session);
+      break;
+    case 'За місяць':
+      await handlePeriod(ctx, 'month', session);
+      break;
+    case 'Минулий місяць':
+      await handlePeriod(ctx, 'last_month', session);
+      break;
 
     case 'Профіль': {
       await ctx.reply([
@@ -179,7 +225,6 @@ bot.on('text', async (ctx) => {
 });
 
 // ─── Period handler ───────────────────────────────────────────────────────────
-
 async function handlePeriod(ctx, period, session) {
   await ctx.reply('Завантаження...');
   const label = periodLabel(period);
@@ -197,18 +242,18 @@ async function handlePeriod(ctx, period, session) {
         { parse_mode: 'HTML' }
       );
     }
-  } catch (e) { await ctx.reply(`Помилка: ${e.message}`); }
+  } catch (e) {
+    await ctx.reply(`Помилка: ${e.message}`);
+  }
 }
 
 // ─── Error handler ────────────────────────────────────────────────────────────
-
 bot.catch((err, ctx) => {
   console.error(`Error [${ctx.from?.id}]:`, err.message);
   ctx.reply('Виникла помилка. Спробуйте /start').catch(() => { });
 });
 
 // ─── Notification helpers ─────────────────────────────────────────────────────
-
 function formatDateUk(dateStr) {
   if (!dateStr) return '—';
   return new Date(dateStr).toLocaleDateString('uk-UA', {
@@ -232,7 +277,6 @@ async function sendNotification(driverId, tripId, buildMsg) {
 }
 
 // ─── Trip created notification ────────────────────────────────────────────────
-
 async function notifyTripCreated(trip) {
   if (!trip.driver_id) return;
 
@@ -267,7 +311,6 @@ async function notifyTripCreated(trip) {
 }
 
 // ─── Trip completed notification ─────────────────────────────────────────────
-
 async function notifyTripCompleted(trip) {
   if (!trip.driver_id) return;
 
@@ -288,15 +331,29 @@ async function notifyTripCompleted(trip) {
   });
 }
 
-// ─── Realtime listener з авто-реконнектом ────────────────────────────────────
-
+// ─── Realtime listener з авто-реконнектом (ВИПРАВЛЕНО) ────────────────────────
 let realtimeChannels = [];
+let reconnectInterval = null;
+let healthCheckInterval = null;
+let server = null; // Для graceful shutdown
+
+function cleanupChannels() {
+  if (realtimeChannels.length) {
+    realtimeChannels.forEach(ch => {
+      try {
+        if (ch.unsubscribe) ch.unsubscribe();
+        if (db.supabase.removeChannel) db.supabase.removeChannel(ch);
+      } catch (e) {
+        console.warn('Channel cleanup error:', e.message);
+      }
+    });
+    realtimeChannels = [];
+  }
+}
 
 function setupChannels() {
-  realtimeChannels.forEach(ch => {
-    try { db.supabase.removeChannel(ch); } catch {}
-  });
-  realtimeChannels = [];
+  // Закриваємо старі канали перед створенням нових
+  cleanupChannels();
 
   const chCreated = db.supabase
     .channel('trips-created')
@@ -308,11 +365,15 @@ function setupChannels() {
       const trip = payload.new;
       console.log(`[Realtime] trip INSERT id=${trip.id} driver_id=${trip.driver_id}`);
       if (!trip.driver_id) return;
-      const car = trip.car_id ? await db.getCarById(trip.car_id) : null;
-      notifyTripCreated({ ...trip, car });
+      try {
+        const car = trip.car_id ? await db.getCarById(trip.car_id) : null;
+        await notifyTripCreated({ ...trip, car });
+      } catch (e) {
+        console.error(`[Realtime] Error processing INSERT:`, e.message);
+      }
     })
     .subscribe((status, err) => {
-      console.log('[Realtime] trips-created:', status);
+      console.log('[Realtime] trips-created status:', status);
       if (err) console.error('[Realtime] trips-created error:', err.message);
     });
 
@@ -326,11 +387,13 @@ function setupChannels() {
       const { new: newRow, old: oldRow } = payload;
       console.log(`[Realtime] trip UPDATE id=${newRow.id} | old.end_mileage=${oldRow.end_mileage} | new.end_mileage=${newRow.end_mileage}`);
       if ((oldRow.end_mileage == null) && (newRow.end_mileage != null)) {
-        notifyTripCompleted(newRow);
+        notifyTripCompleted(newRow).catch(e => {
+          console.error(`[Realtime] Error processing UPDATE:`, e.message);
+        });
       }
     })
     .subscribe((status, err) => {
-      console.log('[Realtime] trips-completed:', status);
+      console.log('[Realtime] trips-completed status:', status);
       if (err) console.error('[Realtime] trips-completed error:', err.message);
     });
 
@@ -340,8 +403,27 @@ function setupChannels() {
 function startRealtimeListener() {
   setupChannels();
 
+  // Перевірка здоров'я каналів замість повного перепідключення
+  if (healthCheckInterval) clearInterval(healthCheckInterval);
+  healthCheckInterval = setInterval(() => {
+    let needsReconnect = false;
+    realtimeChannels.forEach(ch => {
+      if (ch.state !== 'subscribed') {
+        console.log(`[Realtime] Channel ${ch.topic} state: ${ch.state}, needs reconnect`);
+        needsReconnect = true;
+      }
+    });
+
+    if (needsReconnect) {
+      console.log('[Realtime] Reconnecting all channels...');
+      setupChannels();
+    }
+  }, 30 * 60 * 1000);
+
+  // Keepalive для Render (тільки якщо є WEBHOOK_URL)
   if (WEBHOOK_URL) {
-    setInterval(async () => {
+    if (reconnectInterval) clearInterval(reconnectInterval);
+    reconnectInterval = setInterval(async () => {
       try {
         const res = await fetch(`${WEBHOOK_URL}/health`);
         console.log(`[Keepalive] ping ${res.status}`);
@@ -350,14 +432,37 @@ function startRealtimeListener() {
       }
     }, 10 * 60 * 1000);
   }
-
-  setInterval(() => {
-    console.log('[Realtime] Scheduled reconnect...');
-    setupChannels();
-  }, 30 * 60 * 1000);
 }
-// ─── Webhook server + launch ──────────────────────────────────────────────────
 
+// ─── Graceful shutdown (ДОДАНО) ───────────────────────────────────────────────
+async function shutdown(signal) {
+  console.log(`\n${signal} received. Shutting down gracefully...`);
+
+  // Зупиняємо інтервали
+  if (healthCheckInterval) clearInterval(healthCheckInterval);
+  if (reconnectInterval) clearInterval(reconnectInterval);
+
+  // Закриваємо realtime канали
+  cleanupChannels();
+
+  // Закриваємо HTTP сервер (якщо в webhook режимі)
+  if (server) {
+    server.close(() => {
+      console.log('HTTP server closed');
+    });
+  }
+
+  // Зупиняємо бота
+  try {
+    await bot.stop(signal);
+  } catch (e) {
+    console.error('Error stopping bot:', e.message);
+  }
+
+  process.exit(0);
+}
+
+// ─── Webhook server + launch ──────────────────────────────────────────────────
 async function start() {
   if (WEBHOOK_URL) {
     // ── Webhook mode (production on Render) ───────────────────────────────────
@@ -372,9 +477,22 @@ async function start() {
     });
 
     // One HTTP server: handles both the webhook path and a /health check
-    const server = http.createServer(async (req, res) => {
+    server = http.createServer(async (req, res) => {
       if (req.url.startsWith(webhookPath) && req.method === 'POST') {
         await webhookHandler(req, res);
+      } else if (req.url === '/health') {
+        // Покращений health check
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          status: 'ok',
+          timestamp: new Date().toISOString(),
+          uptime: process.uptime(),
+          realtimeChannels: realtimeChannels.map(ch => ({
+            topic: ch.topic,
+            state: ch.state
+          })),
+          memory: process.memoryUsage(),
+        }));
       } else {
         res.writeHead(200);
         res.end('OK');
@@ -398,10 +516,16 @@ async function start() {
   }
 }
 
+// Реєструємо обробники graceful shutdown
+process.once('SIGINT', () => shutdown('SIGINT'));
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+
+// Додатковий обробник для unhandled rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 start().catch(e => {
   console.error('Startup error:', e.message);
   process.exit(1);
 });
-
-process.once('SIGINT', () => { try { bot.stop('SIGINT'); } catch { process.exit(0); } });
-process.once('SIGTERM', () => { try { bot.stop('SIGTERM'); } catch { process.exit(0); } });
