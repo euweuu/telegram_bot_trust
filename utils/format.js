@@ -38,11 +38,8 @@ function formatTripItem(trip, index) {
     ? `${trip.distance} км`
     : '⏳ нічна (не завершена)';
 
-  // Escape car string properly
-  const carEscaped = escapeHtml(trip.car);
-
   const lines = [
-    `${bold(String(index + 1))}. ${escapeHtml(trip.dateFormatted)} — ${carEscaped}`,
+    `${bold(String(index + 1))}. ${escapeHtml(trip.dateFormatted)} — ${escapeHtml(trip.car)}`,
     `   📍 ${escapeHtml(trip.route)}`,
     `   🛣 ${distStr}`,
   ];
@@ -104,13 +101,14 @@ function formatDispatcherStats(allStats, label) {
 
   const lines = [`📊 ${bold(label)}`, divider()];
 
+  // Sort by totalKm descending
   const sorted = [...allStats].sort((a, b) => b.stats.totalKm - a.stats.totalKm);
 
   for (const d of sorted) {
     const s = d.stats;
     if (s.totalTrips === 0) continue;
     lines.push(
-      `👤 ${bold(escapeHtml(d.driverName))}`,
+      `👤 ${bold(d.driverName)}`,
       `   🚕 ${s.totalTrips} поїздок · 🛣 ${s.totalKm} км · 📏 avg ${s.avgKm} км`,
     );
     if (s.overnightPending) {

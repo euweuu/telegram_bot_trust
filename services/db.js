@@ -6,48 +6,11 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
-// ─── Telegram Token Auth (Atomic) ─────────────────────────────────────────────
+// ─── Telegram Token Auth ──────────────────────────────────────────────────────
 
 /**
- * Validate AND consume a link token atomically.
+ * Validate a link token from the site.
  * Returns { driverId, driverName } if valid, or throws.
- * This is atomic - validates and consumes in one operation.
- */
-async function validateAndConsumeToken(token) {
-  const now = new Date().toISOString();
-
-  // Atomic update: only if token exists, not used, and not expired
-  const { data, error } = await supabase
-    .from('telegram_link_tokens')
-    .update({ used: true, used_at: now })
-    .eq('token', token.toUpperCase())
-    .eq('used', false)
-    .gt('expires_at', now)
-    .select('driver_id, driver:drivers(id, name, active)')
-    .single();
-
-  if (error) {
-    if (error.code === 'PGRST116') {
-      // No matching record found
-      throw new Error('Код не знайдено, вже використано або термін дії вийшов. Згенеруйте новий код на сайті.');
-    }
-    throw new Error('Помилка бази даних');
-  }
-
-  if (!data) {
-    throw new Error('Код не знайдено, вже використано або термін дії вийшов. Згенеруйте новий код на сайті.');
-  }
-
-  if (!data.driver?.active) {
-    throw new Error('Водія не знайдено або він неактивний.');
-  }
-
-  return { driverId: data.driver.id, driverName: data.driver.name };
-}
-
-/**
- * Legacy function for backward compatibility
- * @deprecated Use validateAndConsumeToken instead
  */
 async function validateLinkToken(token) {
   const { data, error } = await supabase
@@ -65,13 +28,19 @@ async function validateLinkToken(token) {
   return { driverId: data.driver.id, driverName: data.driver.name };
 }
 
+/**
+ * Mark a token as used (after successful linking).
+ */
 async function consumeToken(token) {
   await supabase
     .from('telegram_link_tokens')
-    .update({ used: true, used_at: new Date().toISOString() })
+    .update({ used: true })
     .eq('token', token.toUpperCase());
 }
 
+/**
+ * Save or update the Telegram ↔ Driver mapping.
+ */
 async function linkTelegramUser(telegramId, driverId, telegramName) {
   const { error } = await supabase
     .from('telegram_users')
@@ -86,6 +55,9 @@ async function linkTelegramUser(telegramId, driverId, telegramName) {
   if (error) throw error;
 }
 
+/**
+ * Unlink a Telegram user from their driver account.
+ */
 async function unlinkTelegramUser(telegramId) {
   const { error } = await supabase
     .from('telegram_users')
@@ -95,6 +67,10 @@ async function unlinkTelegramUser(telegramId) {
   if (error) throw error;
 }
 
+/**
+ * Find driver linked to a Telegram ID (persistent session from DB).
+ * Returns { driverId, driverName } or null.
+ */
 async function getLinkedDriver(telegramId) {
   const { data, error } = await supabase
     .from('telegram_users')
@@ -105,18 +81,21 @@ async function getLinkedDriver(telegramId) {
   if (error || !data) return null;
   if (!data.driver?.active) return null;
 
-  // Update last_seen silently (don't await)
+  // Update last_seen silently
   supabase
     .from('telegram_users')
     .update({ last_seen: new Date().toISOString() })
     .eq('telegram_id', telegramId)
-    .catch(err => console.error('Failed to update last_seen:', err.message));
+    .then(() => { });
 
   return { driverId: data.driver.id, driverName: data.driver.name };
 }
 
 // ─── Notifications ────────────────────────────────────────────────────────────
 
+/**
+ * Get the Telegram ID linked to a driver (for sending notifications).
+ */
 async function getDriverTelegramId(driverId) {
   const { data } = await supabase
     .from('telegram_users')
@@ -126,6 +105,10 @@ async function getDriverTelegramId(driverId) {
   return data?.telegram_id ?? null;
 }
 
+/**
+ * Get all linked Telegram users (for dispatcher broadcast).
+ * Returns array of { telegram_id, driver_id, telegram_name }.
+ */
 async function getAllLinkedUsers() {
   const { data, error } = await supabase
     .from('telegram_users')
@@ -136,6 +119,9 @@ async function getAllLinkedUsers() {
   return (data || []).filter(u => u.driver?.active);
 }
 
+/**
+ * Get basic car info by ID (for notifications).
+ */
 async function getCarById(carId) {
   const { data } = await supabase
     .from('cars')
@@ -147,6 +133,9 @@ async function getCarById(carId) {
 
 // ─── Trips ────────────────────────────────────────────────────────────────────
 
+/**
+ * Get trips for a specific driver in a date range.
+ */
 async function getDriverTrips(driverId, startDate, endDate) {
   const { data, error } = await supabase
     .from('trips')
@@ -170,6 +159,9 @@ async function getDriverTrips(driverId, startDate, endDate) {
   return (data || []).map(formatTrip);
 }
 
+/**
+ * Get recent trips for a driver with pagination (offset-based).
+ */
 async function getDriverRecentTrips(driverId, limit = 10, offset = 0) {
   const { data, error, count } = await supabase
     .from('trips')
@@ -196,6 +188,9 @@ async function getDriverRecentTrips(driverId, limit = 10, offset = 0) {
   };
 }
 
+/**
+ * Get summary stats for all active drivers (for dispatcher).
+ */
 async function getAllDriversStats(startDate, endDate) {
   const { data, error } = await supabase
     .from('trips')
@@ -212,6 +207,7 @@ async function getAllDriversStats(startDate, endDate) {
 
   if (error) throw error;
 
+  // Group by driver
   const byDriver = {};
   for (const trip of (data || [])) {
     if (!trip.driver?.active) continue;
@@ -234,6 +230,9 @@ async function getAllDriversStats(startDate, endDate) {
 
 // ─── Analytics ────────────────────────────────────────────────────────────────
 
+/**
+ * Calculate statistics from a trips array.
+ */
 function calcStats(trips) {
   const completed = trips.filter(t => !t.isOvernight || t.endMileage != null);
   const totalKm = completed.reduce((s, t) => s + (t.distance || 0), 0);
@@ -279,6 +278,9 @@ function formatTrip(trip) {
   };
 }
 
+/**
+ * Date helpers — returns ISO date string YYYY-MM-DD.
+ */
 function getDateRange(period) {
   const now = new Date();
   let start, end;
@@ -309,19 +311,23 @@ function toISODate(d) {
 
 module.exports = {
   supabase,
-  validateAndConsumeToken,  // NEW: atomic operation
-  validateLinkToken,        // legacy, kept for compatibility
+  // Token-based linking
+  validateLinkToken,
   consumeToken,
   linkTelegramUser,
   unlinkTelegramUser,
   getLinkedDriver,
   getDriverTelegramId,
   getAllLinkedUsers,
+  // Cars
   getCarById,
+  // Trips
   getDriverTrips,
   getDriverRecentTrips,
+  // Analytics
   calcStats,
   getAllDriversStats,
+  // Date utils
   getDateRange,
   toISODate,
 };
