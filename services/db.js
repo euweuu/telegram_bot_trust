@@ -235,17 +235,17 @@ async function getAllDriversStats(startDate, endDate) {
  */
 function calcStats(trips) {
   const completed = trips.filter(t => !t.isOvernight || t.endMileage != null);
-  const totalKm = completed.reduce((s, t) => s + (t.distance || 0), 0);
-  const totalAmount = completed.reduce((s, t) => s + (t.amount || 0), 0);
-  const overnight = trips.filter(t => t.isOvernight && t.endMileage == null).length;
+  const totalKm     = completed.reduce((s, t) => s + (t.distance || 0), 0);
+  const totalAmount = completed.reduce((s, t) => s + (t.amount   || 0), 0);
+  const overnight   = trips.filter(t => t.isOvernight && t.endMileage == null).length;
 
   return {
-    totalTrips: trips.length,
-    completedTrips: completed.length,
+    totalTrips:       trips.length,
+    completedTrips:   completed.length,
     overnightPending: overnight,
-    totalKm: Math.round(totalKm),
-    totalAmount: Math.round(totalAmount),
-    avgKm: completed.length > 0 ? Math.round(totalKm / completed.length) : 0,
+    totalKm:          Math.round(totalKm),
+    totalAmount:      Math.round(totalAmount),
+    avgKm:            completed.length > 0 ? Math.round(totalKm / completed.length) : 0,
   };
 }
 
@@ -259,22 +259,22 @@ function formatTrip(trip) {
   const amount = distance != null ? distance * (trip.tariff || 0) : null;
 
   return {
-    id: trip.id,
-    date: trip.date,
+    id:            trip.id,
+    date:          trip.date,
     dateFormatted: trip.date
       ? new Date(trip.date).toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit', year: 'numeric' })
       : '—',
-    route: trip.route || '—',
+    route:        trip.route || '—',
     startMileage: trip.start_mileage || 0,
-    endMileage: trip.end_mileage,
+    endMileage:   trip.end_mileage,
     distance,
-    tariff: trip.tariff || 0,
+    tariff:       trip.tariff || 0,
     amount,
-    notes: trip.notes || '',
+    notes:        trip.notes || '',
     isOvernight,
-    car: trip.car ? `${trip.car.brand} ${trip.car.model} (${trip.car.plate})` : '—',
-    driverName: trip.driver?.name || null,
-    driverId: trip.driver?.id || null,
+    car:          trip.car ? `${trip.car.brand} ${trip.car.model} (${trip.car.plate})` : '—',
+    driverName:   trip.driver?.name || null,
+    driverId:     trip.driver?.id   || null,
   };
 }
 
@@ -297,9 +297,9 @@ function getDateRange(period) {
     start = toISODate(new Date(now.getFullYear(), now.getMonth(), 1));
   } else if (period === 'last_month') {
     const first = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const last = new Date(now.getFullYear(), now.getMonth(), 0);
+    const last  = new Date(now.getFullYear(), now.getMonth(), 0);
     start = toISODate(first);
-    end = toISODate(last);
+    end   = toISODate(last);
   }
 
   return { start, end };
@@ -331,3 +331,113 @@ module.exports = {
   getDateRange,
   toISODate,
 };
+
+// ─── Dispatcher: trip management ─────────────────────────────────────────────
+
+/**
+ * Get all active drivers list.
+ * Returns array of { id, name }.
+ */
+async function getActiveDrivers() {
+  const { data, error } = await supabase
+    .from('drivers')
+    .select('id, name')
+    .eq('active', true)
+    .order('name');
+  if (error) throw error;
+  return data || [];
+}
+
+/**
+ * Get all active cars list.
+ * Returns array of { id, brand, model, plate }.
+ */
+async function getActiveCars() {
+  const { data, error } = await supabase
+    .from('cars')
+    .select('id, brand, model, plate')
+    .eq('active', true)
+    .order('brand');
+  if (error) throw error;
+  return data || [];
+}
+
+/**
+ * Get a single trip by ID (raw row).
+ */
+async function getTripById(tripId) {
+  const { data, error } = await supabase
+    .from('trips')
+    .select(`
+      id, date, route, start_mileage, end_mileage,
+      tariff, notes, is_overnight, driver_id, car_id,
+      driver:drivers(id, name),
+      car:cars(brand, model, plate)
+    `)
+    .eq('id', tripId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ?? null;
+}
+
+/**
+ * Get open (not completed) overnight trips for all drivers.
+ * Returns array of raw trip rows with driver and car info.
+ */
+async function getOpenOvernightTrips() {
+  const { data, error } = await supabase
+    .from('trips')
+    .select(`
+      id, date, route, start_mileage,
+      driver_id, car_id,
+      driver:drivers(id, name, active),
+      car:cars(brand, model, plate)
+    `)
+    .eq('is_overnight', true)
+    .is('end_mileage', null)
+    .order('date', { ascending: false });
+  if (error) throw error;
+  return (data || []).filter(t => t.driver?.active);
+}
+
+/**
+ * Create a new trip.
+ */
+async function createTrip({ driverId, carId, date, route, startMileage, tariff, notes, isOvernight }) {
+  const { data, error } = await supabase
+    .from('trips')
+    .insert([{
+      driver_id:     driverId,
+      car_id:        carId,
+      date,
+      route,
+      start_mileage: startMileage,
+      tariff:        tariff || 0,
+      notes:         notes || null,
+      is_overnight:  isOvernight || false,
+    }])
+    .select('id')
+    .single();
+  if (error) throw error;
+  return data.id;
+}
+
+/**
+ * Complete a trip by setting end_mileage.
+ */
+async function completeTrip(tripId, endMileage) {
+  const { error } = await supabase
+    .from('trips')
+    .update({ end_mileage: endMileage })
+    .eq('id', tripId);
+  if (error) throw error;
+}
+
+Object.assign(module.exports, {
+  getActiveDrivers,
+  getActiveCars,
+  getTripById,
+  getOpenOvernightTrips,
+  createTrip,
+  completeTrip,
+});
