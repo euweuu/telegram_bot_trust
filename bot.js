@@ -358,12 +358,18 @@ bot.action('trip_create_cancel', async (ctx) => {
 });
 
 // ─── Trip create: pick driver ─────────────────────────────────────────────────
-bot.action(/^pick_driver_(\d+)_(.+)$/, async (ctx) => {
+bot.action(/^pick_driver_(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   if (!isDispatcher(ctx.from.id)) return;
 
-  const driverId   = parseInt(ctx.match[1], 10);
-  const driverName = decodeURIComponent(ctx.match[2]);
+  const driverId = parseInt(ctx.match[1], 10);
+  const pending  = pendingState.get(String(ctx.from.id));
+  if (!pending || pending.type !== 'trip_create_driver') {
+    await ctx.editMessageText('Сесія застаріла. Почніть заново.');
+    return;
+  }
+
+  const driverName = (pending.drivers || []).find(d => d.id === driverId)?.name || String(driverId);
 
   try {
     const cars = await db.getActiveCars();
@@ -372,16 +378,16 @@ bot.action(/^pick_driver_(\d+)_(.+)$/, async (ctx) => {
       await ctx.reply('Оберіть дію:', dispatcherMenu);
       return;
     }
-    pendingState.set(String(ctx.from.id), { type: 'trip_create_car', driverId, driverName });
+    pendingState.set(String(ctx.from.id), { type: 'trip_create_car', driverId, driverName, cars });
     const buttons = cars.map(c => {
       const label = `${c.brand} ${c.model} (${c.plate})`;
-      return [Markup.button.callback(label, `pick_car_${c.id}_${encodeURIComponent(label)}`)];
+      return [Markup.button.callback(label, `pick_car_${c.id}`)];
     });
     buttons.push([Markup.button.callback('❌ Скасувати', 'trip_create_cancel')]);
-    await ctx.editMessageText(`Водій: ${fmt.escapeHtml(driverName)}\n\nОберіть автомобіль:`, {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard(buttons),
-    });
+    await ctx.editMessageText(
+      `Водій: ${fmt.bold(fmt.escapeHtml(driverName))}\n\nОберіть автомобіль:`,
+      { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) }
+    );
   } catch (e) {
     log.error('pick_driver — load cars:', e.message);
     await ctx.editMessageText('Помилка завантаження автомобілів.');
@@ -389,12 +395,11 @@ bot.action(/^pick_driver_(\d+)_(.+)$/, async (ctx) => {
 });
 
 // ─── Trip create: pick car ────────────────────────────────────────────────────
-bot.action(/^pick_car_(\d+)_(.+)$/, async (ctx) => {
+bot.action(/^pick_car_(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   if (!isDispatcher(ctx.from.id)) return;
 
   const carId   = parseInt(ctx.match[1], 10);
-  const carName = decodeURIComponent(ctx.match[2]);
   const pending = pendingState.get(String(ctx.from.id));
 
   if (!pending || pending.type !== 'trip_create_car') {
@@ -402,9 +407,12 @@ bot.action(/^pick_car_(\d+)_(.+)$/, async (ctx) => {
     return;
   }
 
+  const carObj  = (pending.cars || []).find(c => c.id === carId);
+  const carName = carObj ? `${carObj.brand} ${carObj.model} (${carObj.plate})` : String(carId);
+
   pendingState.set(String(ctx.from.id), { ...pending, type: 'trip_create_route', carId, carName });
   await ctx.editMessageText(
-    `Водій: ${fmt.bold(pending.driverName)}\nАвто: ${fmt.bold(carName)}\n\nВведіть маршрут:`,
+    `Водій: ${fmt.bold(fmt.escapeHtml(pending.driverName))}\nАвто: ${fmt.bold(fmt.escapeHtml(carName))}`,
     { parse_mode: 'HTML' }
   );
   await ctx.reply('Введіть маршрут (наприклад: Київ — Львів):', Markup.keyboard([['❌ Скасувати']]).resize());
@@ -603,10 +611,11 @@ bot.on('text', async (ctx) => {
           await ctx.reply('Немає активних водіїв.', dispatcherMenu);
           return;
         }
-        pendingState.set(String(userId), { type: 'trip_create_driver' });
-        const buttons = drivers.map(d => [Markup.button.callback(d.name, `pick_driver_${d.id}_${encodeURIComponent(d.name)}`)]);
+        const buttons = drivers.map(d => [Markup.button.callback(d.name, `pick_driver_${d.id}`)]);
         buttons.push([Markup.button.callback('❌ Скасувати', 'trip_create_cancel')]);
         await ctx.reply('Оберіть водія:', Markup.inlineKeyboard(buttons));
+        // Store drivers list in pending so we can resolve name by id later
+        pendingState.set(String(userId), { type: 'trip_create_driver', drivers });
       } catch (e) {
         log.error('create trip — load drivers:', e.message);
         await ctx.reply('Помилка завантаження водіїв.', dispatcherMenu);
